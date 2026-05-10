@@ -56,7 +56,7 @@
 
 1. **Клонирование репозитория**
    ```bash
-   git clone https://github.com/your-username/vkr-protocol-generator.git
+   git clone https://github.com/Alex1A1ndrA/VKRb_MAI.git
    cd vkr-protocol-generator
    ```
 
