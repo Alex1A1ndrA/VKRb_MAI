@@ -98,6 +98,16 @@ def manual_surname_rules(surname: str, case: str, gender: str) -> str | None:
                 return core + 'ым'
             if case == 'loct':
                 return core + 'ом'
+        if s_low.endswith('а'):
+            core = s[:-1]
+            if case == 'gent':
+                return core + 'ы'
+            if case == 'datv':
+                return core + 'е'
+            if case == 'ablt':
+                return core + 'ой'
+            if case == 'loct':
+                return core + 'е'
     return None
 
 def fio_in_case(fio: str, case: str, gender: str = None) -> str:
