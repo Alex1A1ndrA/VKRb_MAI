@@ -57,7 +57,7 @@
 1. **Клонирование репозитория**
    ```bash
    git clone https://github.com/Alex1A1ndrA/VKRb_MAI.git
-   cd vkr-protocol-generator
+   cd VKRb_MAI
    ```
 
 2. **Создание и активация виртуального окружения**
