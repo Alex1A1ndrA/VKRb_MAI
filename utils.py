@@ -30,6 +30,31 @@ def safe_date_conversion(date_str, dayfirst=True):
     except:
         return pd.NaT
 
+def get_parsed_word(word: str, gender: str = None):
+    parsed_list = morph.parse(word)
+    if not parsed_list:
+        return None
+    if gender is None:
+        return parsed_list[0]
+    for p in parsed_list:
+        if p.tag.gender == gender:
+            return p
+    return parsed_list[0]
+
+def inflect_word(word: str, case: str, gender: str = None) -> str:
+    if not word:
+        return word
+    parsed = get_parsed_word(word, gender)
+    if parsed is None:
+        return word
+    tags = {case}
+    if gender:
+        tags.add(gender)
+    inflected = parsed.inflect(tags)
+    if inflected:
+        return inflected.word
+    return word
+
 def detect_gender_by_patronymic(fio: str):
     parts = fio.strip().split()
     if len(parts) != 3:
@@ -119,24 +144,14 @@ def fio_in_case(fio: str, case: str, gender: str = None) -> str:
         gender = detect_gender_by_patronymic(fio)
     if gender is None:
         return fio
-    tags = {case, gender}
-    try:
-        name_inf = morph.parse(name)[0].inflect(tags)
-        patr_inf = morph.parse(patr)[0].inflect(tags)
-        name_res = name_inf.word.capitalize() if name_inf else name
-        patr_res = patr_inf.word.capitalize() if patr_inf else patr
-    except:
-        name_res = name
-        patr_res = patr
+    name_res = inflect_word(name, case, gender).capitalize()
+    patr_res = inflect_word(patr, case, gender).capitalize()
     fam_manual = manual_surname_rules(fam, case, gender)
     if fam_manual is not None:
         fam_res = fam_manual.capitalize()
     else:
-        try:
-            fam_inf = morph.parse(fam)[0].inflect(tags)
-            fam_res = fam_inf.word.capitalize() if fam_inf and case != 'nomn' else fam
-        except:
-            fam_res = fam
+        fam_res = inflect_word(fam, case, gender).capitalize()
+    return f"{fam_res} {name_res} {patr_res}"
     return f"{fam_res} {name_res} {patr_res}"
 
 def short_fio(fio):
