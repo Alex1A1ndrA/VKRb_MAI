@@ -290,9 +290,7 @@ def ensure_section(doc, width, height):
 def parse_defense_dates(date_str):
     if pd.isna(date_str):
         return []
-    main_part = str(date_str).split(',')[0].strip()
-    main_part = main_part.replace('\\', ',').replace('/', ',')
-    dates = [d.strip() for d in main_part.split(',') if d.strip()]
+    dates = re.findall(r'\d{2}\.\d{2}\.\d{2}', str(date_str))
     return dates
 
 def parse_predefense_dates(date_str):

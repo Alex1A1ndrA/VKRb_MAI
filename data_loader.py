@@ -6,7 +6,7 @@ from datetime import datetime
 from docx import Document
 
 from constants import (
-    excel_programs, excel_commissions, excel_dates, excel_students, gek_docx,
+    excel_programs, excel_dates, excel_students, gek_docx,
     template_path_defense_5, template_path_defense_4,
     template_path_pred_bachelor, template_path_pred_master, template_path_commission,
     output_dir_defense, output_dir_pred, output_dir_protocols
@@ -62,6 +62,13 @@ def get_program_info(group_num, year=None):
                 return rec
     return records[0]
 
+def normalize_profile_text(profile: str) -> str:
+    if not isinstance(profile, str):
+        profile = str(profile)
+    profile = re.sub(r'[«»"*]', '', profile)
+    profile = re.sub(r'\s+', ' ', profile).strip()
+    return profile.lower()
+
 def get_program_description(level: str) -> str:
     level = level.strip()
     if level == 'СВО':
@@ -88,77 +95,46 @@ def qualification_genitive(qual: str) -> str:
     else:
         return qual.upper()
 
+def _get_suffix(level: str) -> str:
+    if level == 'БВО':
+        return 'БВ'
+    elif level == 'СВО':
+        return 'СВ'
+    elif level == 'Магистратура':
+        return 'М'
+    elif level == 'Бакалавриат':
+        return 'Б'
+    else:
+        return ''
+    
 def get_group_full_info(group_num, year=None):
     programs_data = get_programs_data()
-    if group_num not in programs_data:
-        return group_num, ''
-    info = get_program_info(group_num, year)
-    if info is None:
-        info = get_program_info(group_num)
-    if info is None:
-        return group_num, ''
-    level = info['level']
-    year_used = info['year']
-    year_str = str(year_used)[-2:]
-    if level == 'БВО':
-        suffix = 'БВ'
-    elif level == 'СВО':
-        suffix = 'СВ'
-    elif level == 'Магистратура':
-        suffix = 'М'
-    elif level == 'Бакалавриат':
-        suffix = 'Б'
-    else:
-        suffix = ''
-    full_group_name = f"М8О-{group_num}{suffix}-{year_str}"
-    first_digit = int(str(group_num)[0])
-    graduation_year = year_used + first_digit
-    return full_group_name, str(graduation_year)
+    group_num_str = str(group_num)
 
-@st.cache_data
-def get_commission_data():
-    try:
-        df = pd.read_excel(excel_commissions, sheet_name='Лист1')
-    except Exception as e:
-        st.error(f"Ошибка загрузки комиссии: {e}")
-        return {}
-    commission = {}
-    for _, row in df.iterrows():
-        fam = str(row.get('Фамилия', '')).strip()
-        if not fam:
-            continue
-        role = str(row.get('Должность', '')).strip().lower()
-        degree = str(row.get('Степень', '')).strip().lower()
-        title = str(row.get('Звание', '')).strip().lower()
-        can_be_chair = False
-        if any(word in role for word in ['профессор', 'зав', 'заведующий']):
-            can_be_chair = True
-        if 'доктор' in degree:
-            can_be_chair = True
-        if title == 'профессор':
-            can_be_chair = True
+    for full_name, records in programs_data.items():
+        match = re.search(r'М8О-(\d{3})', full_name)
+        if match and match.group(1) == group_num_str:
+            if year is not None:
+                for rec in records:
+                    if rec['year'] == year:
+                        level = rec['level']
+                        year_used = rec['year']
+                        year_str = str(year_used)[-2:]
+                        suffix = _get_suffix(level)
+                        full_group_name = f"М8О-{group_num}{suffix}-{year_str}"
+                        graduation_year = year_used + int(group_num_str[0])
+                        return full_group_name, str(graduation_year)
+            if records:
+                rec = records[0]
+                level = rec['level']
+                year_used = rec['year']
+                year_str = str(year_used)[-2:]
+                suffix = _get_suffix(level)
+                full_group_name = f"М8О-{group_num}{suffix}-{year_str}"
+                graduation_year = year_used + int(group_num_str[0])
+                return full_group_name, str(graduation_year)
 
-        is_docent = 'доцент' in role
-
-        im = str(row.get('Имя', '')).strip()
-        ot = str(row.get('Отчество', '')).strip()
-        initials = ''
-        if im:
-            initials += im[0].upper() + '.'
-        if ot:
-            initials += ot[0].upper() + '.'
-
-        if role:
-            full_str = f"{role} каф. 806 {fam} {initials}".strip()
-        else:
-            full_str = f"{fam} {initials}".strip()
-
-        commission[fam] = (full_str, can_be_chair, is_docent)
-    return commission
-
-def get_commission_data_norm():
-    commission_data = get_commission_data()
-    return {fam.lower().rstrip('.'): value for fam, value in commission_data.items()}
+    return str(group_num), ''
 
 @st.cache_data
 def get_gek_members():
@@ -184,9 +160,11 @@ def get_gek_members():
 
     def extract_commission(lines, start):
         idx = start
-        while idx < len(lines) and 'Экзаменационная комиссия' not in lines[idx]:
-            if ('Профиль:' in lines[idx] or 'Магистерская программа' in lines[idx] or 
-                ('Направление' in lines[idx] and re.search(r'\d{2}\.\d{2}\.\d{2}', lines[idx]))):
+        while idx < len(lines) and 'экзаменационная комиссия' not in lines[idx].lower():
+            if ('профиль:' in lines[idx].lower() or 
+                'магистерская программа' in lines[idx].lower() or 
+                'программа спецво:' in lines[idx].lower() or
+                ('направление' in lines[idx].lower() and re.search(r'\d{2}\.\d{2}\.\d{2}', lines[idx]))):
                 return [], None, idx
             idx += 1
         if idx >= len(lines):
@@ -195,13 +173,16 @@ def get_gek_members():
         members = []
         while idx < len(lines):
             cur_line = lines[idx]
-            if ('Профиль:' in cur_line or 'Магистерская программа' in cur_line or
-                ('Направление' in cur_line and re.search(r'\d{2}\.\d{2}\.\d{2}', cur_line))):
+            if ('профиль:' in cur_line.lower() or 
+                'магистерская программа' in cur_line.lower() or 
+                'программа спецво:' in cur_line.lower() or
+                ('направление' in cur_line.lower() and re.search(r'\d{2}\.\d{2}\.\d{2}', cur_line))):
                 break
-            if 'Секретарь:' in cur_line:
+            if 'секретарь:' in cur_line.lower():
                 idx += 1
                 break
-            if ('–' in cur_line or '-' in cur_line) and not any(x in cur_line for x in ['Экзаменационная комиссия', 'Секретарь:', 'Магистерская программа:', 'Профиль:']):
+            if ('–' in cur_line or '-' in cur_line) and not any(x in cur_line.lower() for x in 
+                ['экзаменационная комиссия', 'секретарь:', 'магистерская программа:', 'профиль:', 'программа спецво:']):
                 fio_part = re.split(r'[–-]', cur_line)[0].strip()
                 short = make_short(fio_part)
                 members.append(short)
@@ -215,42 +196,38 @@ def get_gek_members():
     i = 0
     while i < len(lines):
         line = lines[i]
-        if 'Направление' in line and re.search(r'\d{2}\.\d{2}\.\d{2}', line):
-            code_match = re.search(r'(\d{2}\.\d{2}\.\d{2})', line)
-            if not code_match:
-                i += 1
-                continue
+        code_match = re.search(r'(\d{2}\.\d{2}\.\d{2})', line)
+        if code_match:
             current_code = code_match.group(1)
-
-            prof_match = re.search(r'(?:Профиль:|Магистерская программа:?)\s*«?([^»]+)»?', line, re.IGNORECASE)
-            if prof_match:
-                profile = prof_match.group(1).strip()
-                members, _, next_i = extract_commission(lines, i + 1)
-                if members:
-                    norm_profile = normalize_profile(profile)
-                    key = (current_code, norm_profile)
-                    gek_members[key] = members
-                i = next_i
-                continue
-            else:
-                i += 1
-                while i < len(lines):
-                    next_line = lines[i]
-                    if 'Направление' in next_line and re.search(r'\d{2}\.\d{2}\.\d{2}', next_line):
-                        break
-                    prof_match = re.search(r'(?:Профиль:|Магистерская программа:?)\s*«?([^»]+)»?', next_line, re.IGNORECASE)
-                    if prof_match:
-                        profile = prof_match.group(1).strip()
-                        members, _, next_i = extract_commission(lines, i + 1)
+            j = i
+            while j < len(lines):
+                next_code_match = re.search(r'(\d{2}\.\d{2}\.\d{2})', lines[j]) if j > i else None
+                if next_code_match and next_code_match.group(1) != current_code:
+                    break
+                prof_match = re.search(r'(?:профиль:|магистерская программа:?|программа спецво:?)\s*«?([^»]+)»?', lines[j], re.IGNORECASE)
+                if prof_match:
+                    profile = prof_match.group(1).strip()
+                    start_commission = j
+                    found = False
+                    for k in range(j, min(j+20, len(lines))):
+                        if 'экзаменационная комиссия' in lines[k].lower():
+                            start_commission = k
+                            found = True
+                            break
+                    if found:
+                        members, _, next_idx = extract_commission(lines, start_commission)
                         if members:
                             norm_profile = normalize_profile(profile)
                             key = (current_code, norm_profile)
                             gek_members[key] = members
-                        i = next_i
-                        continue
-                    i += 1
-                continue
-        i += 1
+                            j = next_idx if next_idx > j else j + 1
+                            continue
+                    j += 1
+                else:
+                    j += 1
+            i = j if j > i else i + 1
+        else:
+            i += 1
     return gek_members
 
 @st.cache_data
@@ -261,21 +238,40 @@ def get_dates_defense():
         st.error(f"Ошибка загрузки дат защит: {e}")
         return pd.DataFrame()
     df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-    expected_cols = ['Направление', 'Группа_полная', 'Форма_обучения',
-                     'Даты_основные', 'Время', 'Аудитория', 'Председатель']
-    if len(df.columns) == 7:
-        df.columns = expected_cols
+
+    group_col = None
+    date_col = None
+    chair_col = None
+    time_col = None
+    for col in df.columns:
+        col_lower = str(col).lower()
+        if 'групп' in col_lower:
+            group_col = col
+        if 'дата' in col_lower and ('защит' in col_lower or 'защиты' in col_lower):
+            date_col = col
+        if 'председатель' in col_lower:
+            chair_col = col
+        if 'время' in col_lower:
+            time_col = col
+
+    if group_col is None or date_col is None:
+        st.error(f"Не найдены колонки с группой или датой в листе 'Даты защит'. Найдены: {list(df.columns)}")
+        return pd.DataFrame()
+
+    df = df.rename(columns={group_col: 'Группа_полная', date_col: 'Даты_основные'})
+    if chair_col:
+        df = df.rename(columns={chair_col: 'Председатель'})
+    if time_col:
+        df = df.rename(columns={time_col: 'Время'})
     else:
-        if len(df.columns) > 7:
-            df = df.iloc[:, :7]
-            df.columns = expected_cols
-        else:
-            st.error(f"Неожиданное число колонок в Датах защит: {len(df.columns)}")
-            return pd.DataFrame()
-    df['Группа_номер'] = df['Группа_полная'].apply(lambda x: extract_group(x) if pd.notna(x) else None)
-    df['Год'] = df['Группа_полная'].apply(lambda x: x.split('-')[-1] if pd.notna(x) and '-' in x else None)
+        df['Время'] = ''
+
+    df['Группа_полная'] = df['Группа_полная'].astype(str).str.strip()
+    df['Группа_номер'] = df['Группа_полная'].apply(lambda x: extract_group(x) if pd.notna(x) and x != 'nan' else None)
+    df['Год'] = df['Группа_полная'].apply(lambda x: x.split('-')[-1] if '-' in x else None)
     df['Время'] = df['Время'].astype(str).str.strip()
-    df['Код_направления'] = df['Направление'].apply(lambda x: x.split()[0] if pd.notna(x) else None)
+    df['Код_направления'] = None
+
     return df
 
 @st.cache_data
@@ -294,7 +290,7 @@ def get_dates_predefense():
             df = df.iloc[:, :5]
             df.columns = expected_cols
         else:
-            st.error(f"Неожиданное число колонок в Датах предзащит: {len(df.columns)}")
+            st.error(f"Неожиданное число колонок в Датах предзащит: {len(df.columns)}. Ожидается 5 колонок.")
             return pd.DataFrame()
     df['Группа_номер'] = df['Группа_короткая'].apply(lambda x: extract_group(x) if pd.notna(x) else None)
     return df

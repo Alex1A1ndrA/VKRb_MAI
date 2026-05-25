@@ -8,8 +8,8 @@ from docxtpl import DocxTemplate
 from docx import Document
 
 from constants import (
-    GRADE_MAP, SECRETARY_DEFAULT, DASH, MONTH_NAMES,
-    template_path_defense_5, template_path_defense_4,
+    GRADE_MAP, SECRETARY_DEFAULT, SECRETARY_PM, DASH, MONTH_NAMES,
+    template_path_defense_7, template_path_defense_6, template_path_defense_5, template_path_defense_4,
     template_path_pred_bachelor, template_path_pred_master,
     template_path_commission,
     output_dir_defense, output_dir_pred, output_dir_protocols
@@ -19,14 +19,14 @@ from utils import (
     parse_questions, split_students_by_dates, parse_defense_dates,
     parse_predefense_dates, remove_empty_paragraphs_around_tables,
     insert_empty_paragraphs_after_text, set_landscape, ensure_section,
-    detect_gender_by_patronymic
+    detect_gender_by_patronymic, extract_group
 )
 from data_loader import (
     get_students, get_dates_defense, get_dates_predefense, get_questions_zash,
     get_questions_pred, get_gek_members, get_program_info, get_group_full_info,
-    get_program_description, qualification_genitive, get_commission_data,
-    get_commission_data_norm
+    get_program_description, qualification_genitive
 )
+
 
 def process_defenses(selected_pairs=None):
     df_students = get_students()
@@ -47,40 +47,67 @@ def process_defenses(selected_pairs=None):
     saved_count = 0
     protocol_number = 1
     daily_slots = {}
-
     selected_set = set(selected_pairs) if selected_pairs is not None else None
 
-    for group_num, group_students in df_students.groupby('Группа'):
-        date_row = df_dates[df_dates['Группа_номер'] == group_num]
-        if date_row.empty:
-            st.warning(f"⚠ Для группы {group_num} не найдено расписание защит.")
+    for group_full, group_students in df_students.groupby('Группа'):
+        group_num = extract_group(group_full)
+        if not group_num:
+            st.warning(f"⚠ Не удалось определить номер группы из '{group_full}'. Пропускаем.")
             continue
-        date_row = date_row.iloc[0]
-        full_group_name = date_row['Группа_полная']
+
+        date_rows = df_dates[df_dates['Группа_номер'] == group_num]
+        if date_rows.empty:
+            st.warning(f"⚠ Для группы {group_full} (номер {group_num}) не найдено расписание защит. Пропускаем.")
+            continue
+        date_row = date_rows.iloc[0]
+        full_group_name_from_dates = date_row['Группа_полная']
         group_year = date_row['Год']
         try:
             year_int = 2000 + int(group_year) if group_year else None
         except:
             year_int = None
 
+        full_group_name_prog, graduation_year = get_group_full_info(group_num, year=year_int)
+        info = get_program_info(full_group_name_prog, year_int)
+        if info:
+            code = info['code']
+            profile = info['profile']
+            direction = f"{code} {info['direction']}"
+            program = profile
+            level = info['level']
+            qualification_orig = info['qualification']
+            program_description = get_program_description(level)
+            qualification_gen = qualification_genitive(qualification_orig)
+            diploma = f"{qualification_genitive(qualification_orig).lower()} без отличия"
+            qualification = qualification_orig
+            qualification_gen_lower = qualification_gen.lower()
+            if 'Прикладная математика' in info['direction']:
+                secretary = SECRETARY_PM
+            else:
+                secretary = SECRETARY_DEFAULT
+        else:
+            code = date_row.get('Код_направления', '')
+            profile = None
+            direction = ''
+            program = ''
+            program_description = ''
+            qualification_gen = ''
+            qualification = ''
+            diploma = ''
+            qualification_gen_lower = ''
+            secretary = SECRETARY_DEFAULT
+            st.warning(f"⚠ Не удалось определить программу для группы {group_num}")
+
         dates_list = parse_defense_dates(date_row['Даты_основные'])
         if not dates_list:
             st.warning(f"⚠ Для группы {group_num} нет дат защит.")
             continue
+
         start_time_str = date_row['Время']
         try:
             start_h, start_m = map(int, start_time_str.split(':')[:2])
         except:
             start_h, start_m = 10, 0
-
-        info = get_program_info(group_num, year_int)
-        if info:
-            code = info['code']
-            profile = info['profile']
-        else:
-            code = date_row['Код_направления']
-            profile = None
-            st.warning(f"⚠ Не удалось определить программу для группы {group_num}")
 
         commission_members = []
         gek_members = get_gek_members()
@@ -101,13 +128,22 @@ def process_defenses(selected_pairs=None):
         predsedatel = commission_members[0]
         other_members = commission_members[1:]
 
-        has_fifth = len(other_members) >= 5
-        template_path = template_path_defense_5 if has_fifth else template_path_defense_4
+        num_members = len(other_members)
+        if num_members >= 7:
+            template_path = template_path_defense_7
+            max_members = 7
+        elif num_members >= 6:
+            template_path = template_path_defense_6
+            max_members = 6
+        elif num_members >= 5:
+            template_path = template_path_defense_5
+            max_members = 5
+        else:
+            template_path = template_path_defense_4
+            max_members = 4
 
-        context_base = {
-            'Председатель': value_or_dash(short_fio(predsedatel)),
-        }
-        for i in range(1, 6):
+        context_base = {'Председатель': value_or_dash(short_fio(predsedatel))}
+        for i in range(1, max_members + 1):
             if i <= len(other_members):
                 context_base[f'Член_комиссии_{i}'] = value_or_dash(short_fio(other_members[i-1]))
             else:
@@ -171,26 +207,6 @@ def process_defenses(selected_pairs=None):
 
                 gender_student = detect_gender_by_patronymic(fio)
 
-                info_prog = info
-                if info_prog:
-                    direction = f"{info_prog['code']} {info_prog['direction']}"
-                    program = info_prog['profile']
-                    level = info_prog['level']
-                    qualification_orig = info_prog['qualification']
-                    program_description = get_program_description(level)
-                    qualification_gen = qualification_genitive(qualification_orig)
-                    diploma = f"{qualification_genitive(qualification_orig).lower()} без отличия"
-                    qualification = qualification_orig
-                else:
-                    direction = ""
-                    program = ""
-                    program_description = ""
-                    qualification_gen = ""
-                    qualification = ""
-                    diploma = ""
-
-                full_group_name_prog, graduation_year = get_group_full_info(group_num, year=year_int)
-
                 date_key = date_str
                 if date_key not in daily_slots:
                     daily_slots[date_key] = 0
@@ -213,7 +229,7 @@ def process_defenses(selected_pairs=None):
                     'СтудентД': fio_in_case(fio, 'datv', gender_student),
                     'СтудентТ': fio_in_case(fio, 'ablt', gender_student),
 
-                    'Группа': full_group_name,
+                    'Группа': full_group_name_prog,
                     'ГруппаПолная': full_group_name_prog,
                     'ГодВыпуска': graduation_year,
 
@@ -223,9 +239,10 @@ def process_defenses(selected_pairs=None):
 
                     'программаО': value_or_dash(program_description),
                     'КвалификацияР': value_or_dash(qualification_gen),
+                    'КвалификацияРм': value_or_dash(qualification_gen_lower),
                     'квалификация': value_or_dash(qualification),
                     'диплом': value_or_dash(diploma),
-                    'Секретарь': SECRETARY_DEFAULT,
+                    'Секретарь': secretary,
 
                     'РуководительР': value_or_dash(role_fio_case(ruk, 'gent')),
                     'КонсультантР': value_or_dash(role_fio_case(konsultant, 'gent')),
@@ -251,7 +268,7 @@ def process_defenses(selected_pairs=None):
                 doc.render(context)
 
                 safe_fio = short_fio(fio).replace('.', '').replace(' ', '_')
-                filename = f"{full_group_name}_{safe_fio}_{protocol_number}.docx"
+                filename = f"{full_group_name_from_dates}_{safe_fio}_{protocol_number}.docx"
                 filepath = os.path.join(output_dir_defense, filename)
                 doc.save(filepath)
 
@@ -260,6 +277,7 @@ def process_defenses(selected_pairs=None):
                 saved_count += 1
 
     return saved_count
+
 
 def process_pre_defenses(selected_pairs=None):
     df_students = get_students()
@@ -278,13 +296,17 @@ def process_pre_defenses(selected_pairs=None):
 
     saved_count = 0
     protocol_number = 1
-
     selected_set = set(selected_pairs) if selected_pairs is not None else None
 
-    for group_num, group_students in df_students.groupby('Группа'):
+    for group_full, group_students in df_students.groupby('Группа'):
+        group_num = extract_group(group_full)
+        if not group_num:
+            st.warning(f"⚠ Не удалось определить номер группы из '{group_full}'. Пропускаем.")
+            continue
+
         date_rows = df_dates_pred[df_dates_pred['Группа_номер'] == group_num]
         if date_rows.empty:
-            st.warning(f"⚠ Для группы {group_num} не найдено расписание предзащит.")
+            st.warning(f"⚠ Для группы {group_full} (номер {group_num}) не найдено расписание предзащит. Пропускаем.")
             continue
         date_row = date_rows.iloc[0]
         dates_list, time_str = parse_predefense_dates(date_row['Дата_предзащиты'])
@@ -299,30 +321,6 @@ def process_pre_defenses(selected_pairs=None):
             comm_str = str(comm_raw)
             comm_str = re.sub(r'[,;]|<br>|\n', '|', comm_str)
             comm_fams_raw = [f.strip() for f in comm_str.split('|') if f.strip()]
-
-        comm_fams = []
-        for full in comm_fams_raw:
-            fam_part = full.split()[0] if full else ''
-            fam_part = fam_part.rstrip('.')
-            comm_fams.append(fam_part)
-
-        commission_data = get_commission_data()
-        commission_data_norm = get_commission_data_norm()
-        
-        commission_with_roles = []
-        for fam in comm_fams:
-            norm_fam = fam.lower().rstrip('.')
-            if norm_fam in commission_data_norm:
-                full_str, can_be_chair, is_docent = commission_data_norm[norm_fam]
-                commission_with_roles.append((can_be_chair, is_docent, full_str))
-            else:
-                commission_with_roles.append((False, False, fam))
-
-        commission_with_roles.sort(key=lambda x: (not x[0], not x[1]))
-        chair_name = commission_with_roles[0][2] if commission_with_roles else "____________"
-        members_final = [x[2] for x in commission_with_roles[1:]]
-        while len(members_final) < 4:
-            members_final.append("____________")
 
         def_row = df_dates_def[df_dates_def['Группа_номер'] == group_num]
         year_int = None
@@ -340,24 +338,32 @@ def process_pre_defenses(selected_pairs=None):
         if not full_group_name or full_group_name == group_num:
             full_group_name = full_group_name_from_def if full_group_name_from_def else group_num
 
-        defense_date_str = ''
+        info = get_program_info(full_group_name, year_int) if year_int else get_program_info(full_group_name)
+        if info:
+            level = info['level']
+            qualification_orig = info['qualification']
+            qualification_gen = qualification_genitive(qualification_orig)
+            qualification_gen_lower = qualification_gen.lower()
+        else:
+            level = 'Бакалавриат'
+            qualification_orig = ''
+            qualification_gen = ''
+            qualification_gen_lower = ''
+        is_master = level in ['Магистратура', 'СВО']
+
+        commission_members = comm_fams_raw.copy()
+        while len(commission_members) < 5:
+            commission_members.append("____________")
+        член1, член2, член3, член4, член5 = commission_members[:5]
+
+        defense_dates_list = []
         if not def_row.empty:
             defense_dates_raw = def_row.iloc[0]['Даты_основные']
             if pd.notna(defense_dates_raw):
-                main_part = defense_dates_raw.split(',')[0].strip()
-                defense_date_str = main_part.replace('\\', ',')
-            else:
-                defense_date_str = ''
-        else:
-            defense_date_str = ''
-
-        info = get_program_info(group_num, year_int) if year_int else get_program_info(group_num)
-        if info:
-            level = info['level']
-        else:
-            level = 'Бакалавриат'
-        is_master = level in ['Магистратура', 'СВО']
-        template_path = template_path_pred_master if is_master else template_path_pred_bachelor
+                raw_str = str(defense_dates_raw)
+                dates_found = re.findall(r'\d{2}\.\d{2}\.\d{2}', raw_str)
+                defense_dates_list = dates_found
+        defense_date_str = ", ".join(defense_dates_list) if defense_dates_list else ''
 
         indices_groups = split_students_by_dates(group_students, dates_list)
 
@@ -369,22 +375,13 @@ def process_pre_defenses(selected_pairs=None):
             if selected_set is not None and (date_str, group_num) not in selected_set:
                 continue
 
-            try:
-                dt = datetime.strptime(date_str, '%d.%m.%y')
-                day_str = dt.strftime('%d')
-                month_str = MONTH_NAMES[dt.strftime('%m')]
-            except:
-                day_str = date_str[:2]
-                month_str = date_str[3:5]
-
-            students_data = []
+            sub_students = group_students.iloc[indices]
+            students_table = []
             missed_lines = []
             missed_index = 2
 
-            sub_students = group_students.iloc[indices]
             for idx_in_sub, (_, student) in enumerate(sub_students.iterrows()):
                 fio = student['ФИО']
-                group_name = student['Группа']
                 was_present = str(student.get('Присутствие_пред', '')).strip().lower() != 'нет'
 
                 tema = student.get('Тема', '')
@@ -394,19 +391,37 @@ def process_pre_defenses(selected_pairs=None):
                 reviewer = student.get('Рецензент', '')
 
                 if is_master:
+                    reviewer_fio = ''
+                    reviewer_job = ''
+                    if pd.notna(reviewer) and str(reviewer).strip():
+                        rev_str = str(reviewer).strip()
+                        comma_pos = rev_str.find(',')
+                        if comma_pos != -1:
+                            reviewer_fio = rev_str[:comma_pos].strip()
+                            reviewer_job = rev_str[comma_pos+1:].strip()
+                        else:
+                            reviewer_fio = rev_str
                     if was_present:
-                        students_data.append({
-                            'num': idx_in_sub + 1,
-                            'ФИО': fio,
+                        students_table.append({
+                            'num': len(students_table) + 1,
                             'Группа': full_group_name,
-                            'Рецензент': "" if pd.isnull(reviewer) else str(reviewer),
+                            'ФИО': fio,
+                            'Тема': clean_text(tema),
+                            'РецензентФИО': reviewer_fio,
+                            'РецензентДолжность': reviewer_job,
                         })
                     else:
                         missed_lines.append(f"{missed_index}. {fio} не явился на предзащиту ВКРМ.")
                         missed_index += 1
                 else:
                     if was_present:
-                        students_data.append(f"{len(students_data)+1}. {fio} ({full_group_name})")
+                        students_table.append({
+                            'num': len(students_table) + 1,
+                            'Группа': full_group_name,
+                            'ФИО': fio,
+                            'Тема': clean_text(tema),
+                            'Допущен': 'Допущен'
+                        })
                     else:
                         missed_lines.append(f"{missed_index}. {fio} не явился на предзащиту ВКРБ.")
                         missed_index += 1
@@ -420,34 +435,57 @@ def process_pre_defenses(selected_pairs=None):
                     missed_lines.append(f"{missed_index}. {fio_dative} рекомендуется сменить руководителя на {new_ruk}.")
                     missed_index += 1
 
+            try:
+                dt = datetime.strptime(date_str, '%d.%m.%y')
+                day_str = dt.strftime('%d')
+                month_str = MONTH_NAMES[dt.strftime('%m')]
+            except:
+                day_str = date_str[:2]
+                month_str = date_str[3:5]
+
+            code_dir = ''
+            if info:
+                code_dir = f"{info['code']} «{info['direction']}»"
+
             base_context = {
                 'Номер': str(protocol_number),
                 'Число': day_str,
                 'Месяц': month_str,
                 'Неявившиеся': "\n".join(missed_lines),
                 'Защита': defense_date_str,
-                'Председатель': chair_name,
-                'Член_комиссии_1': members_final[0],
-                'Член_комиссии_2': members_final[1],
-                'Член_комиссии_3': members_final[2],
-                'Член_комиссии_4': members_final[3],
+                'Количество_ВКР': len(students_table),
+                'Код_Направление': code_dir,
                 'Секретарь': SECRETARY_DEFAULT,
+                'КвалификацияРм': value_or_dash(qualification_gen_lower),
+                'Член_комиссии_1': член1,
+                'Член_комиссии_2': член2,
+                'Член_комиссии_3': член3,
+                'Член_комиссии_4': член4,
+                'Член_комиссии_5': член5,
+                'Студенты_таблица': students_table
             }
+
             if is_master:
-                context = {**base_context, 'Студенты_таблица': students_data}
+                template_path = template_path_pred_master
             else:
-                context = {**base_context, 'Студенты': "\n".join(students_data)}
+                template_path = template_path_pred_bachelor
 
             doc = DocxTemplate(template_path)
-            doc.render(context)
+            doc.render(base_context)
 
             prefix = 'M' if is_master else 'B'
             filename = f'{prefix}_{day_str}_{month_str}_{full_group_name}_{protocol_number}.docx'
             output_path = os.path.join(output_dir_pred, filename)
             doc.save(output_path)
+            
+            doc = Document(output_path)
+            for para in doc.paragraphs:
+                if not para.text.strip():
+                    p = para._element
+                    p.getparent().remove(p)
+            doc.save(output_path)
 
             if is_master:
-                remove_empty_paragraphs_around_tables(output_path)
                 insert_empty_paragraphs_after_text(output_path, "Защита выпускной квалификационной работы состоится", 1)
 
             st.write(f"✔ Протокол сохранён: {filename}")
@@ -456,8 +494,12 @@ def process_pre_defenses(selected_pairs=None):
 
     return saved_count
 
+
 def commission_protocol(protocol_type, selected_date, group_num):
     df_students = get_students()
+    def filter_by_group(df, group_num):
+        return df[df['Группа'].apply(lambda x: extract_group(str(x)) == str(group_num))]
+
     if df_students.empty:
         return 0
 
@@ -467,18 +509,18 @@ def commission_protocol(protocol_type, selected_date, group_num):
             return 0
 
         date_row = df_dates[df_dates['Группа_номер'] == group_num].iloc[0]
-        dates_str = str(date_row['Даты_основные']).strip()
-        main_part = dates_str.split(',')[0].strip()
-        dates_list = [d.strip() for d in main_part.replace('\\', '/').split('/') if d.strip()]
-        
+        dates_list = parse_defense_dates(date_row['Даты_основные'])
+        if not dates_list:
+            st.error("Не удалось извлечь даты защит.")
+            return 0
         try:
             date_idx = dates_list.index(selected_date)
         except ValueError:
             st.error("Выбранная дата не в списке основных дат группы.")
             return 0
 
-        all_studs = df_students[(df_students['Группа'] == group_num) &
-                                 (~df_students['Присутствие_защ'].astype(str).str.strip().isin(['Академ', 'полное отсутствие']))]
+        all_studs = filter_by_group(df_students, group_num)
+        all_studs = all_studs[~all_studs['Присутствие_защ'].astype(str).str.strip().isin(['Академ', 'полное отсутствие'])]
         if all_studs.empty:
             st.warning("Нет студентов для этой группы.")
             return 0
@@ -525,8 +567,8 @@ def commission_protocol(protocol_type, selected_date, group_num):
             st.error("Выбранная дата не соответствует списку дат группы.")
             return 0
 
-        all_studs = df_students[(df_students['Группа'] == group_num) &
-                                 (~df_students['Присутствие_пред'].astype(str).str.strip().isin(['Академ']))]
+        all_studs = filter_by_group(df_students, group_num)
+        all_studs = all_studs[~all_studs['Присутствие_пред'].astype(str).str.strip().isin(['Академ'])]
         if all_studs.empty:
             st.warning("Нет студентов для этой группы.")
             return 0
