@@ -81,7 +81,7 @@ def process_defenses(selected_pairs=None):
             diploma = f"{qualification_genitive(qualification_orig).lower()} без отличия"
             qualification = qualification_orig
             qualification_gen_lower = qualification_gen.lower()
-            if 'Прикладная математика' in info['direction']:
+            if info['direction'] == 'Прикладная математика':
                 secretary = SECRETARY_PM
             else:
                 secretary = SECRETARY_DEFAULT
